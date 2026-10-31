@@ -15,13 +15,14 @@
   .small{font-size:12px;color:#9a8e83}
   button{font:inherit;font-size:18px;font-weight:700;border:0;border-radius:14px;padding:14px 26px;background:#ff9b54;color:#221508;margin:6px;cursor:pointer}
   button.sec{background:#3a302a;color:#f4ece4;font-size:14px;padding:10px 16px}
-  #bar{position:fixed;right:8px;bottom:8px;z-index:3}
+  #bar{position:fixed;right:8px;bottom:8px;z-index:3;display:flex;gap:8px}
   #bar button{font-size:13px;padding:8px 12px;margin:0;background:#3a302a;color:#f4ece4}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="bar" style="display:none"><button id="bCal">⊙ Kalibrieren</button></div>
+<div id="bar" style="display:none"><button id="bMute">🔊 Ton an</button>
+  <button id="bCal">⊙ Kalibrieren</button></div>
 <div id="ov"><div class="card" id="ovc"></div></div>
 <script>
 (()=>{
@@ -53,12 +54,50 @@ function readTilt(){
 }
 async function askSensor(){try{if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission)await DeviceOrientationEvent.requestPermission();}catch(e){}}
 
+
+/* ---------- Ton-Feedback in Stufen (Ersatz für Vibration auf dem iPhone) ---------- */
+let AC=null,master=null,muted=false;
+try{muted=localStorage.getItem('gg_mute')==='1';}catch(e){}
+function audioInit(){
+  try{if(navigator.audioSession)navigator.audioSession.type='playback';}catch(e){}
+  try{
+    if(!AC){const C=window.AudioContext||window.webkitAudioContext;if(!C)return;AC=new C();master=AC.createGain();master.gain.value=.7;master.connect(AC.destination);}
+    if(AC.state!=='running')AC.resume();
+    const b=AC.createBuffer(1,1,22050),s=AC.createBufferSource();s.buffer=b;s.connect(master);s.start(0);
+  }catch(e){}
+}
+function tone(f,d,type,vol,f2,delay){const t=AC.currentTime+(delay||0),o=AC.createOscillator(),g=AC.createGain();
+  o.type=type||'sine';o.frequency.setValueAtTime(f,t);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t+d);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.005);g.gain.exponentialRampToValueAtTime(.0001,t+d);
+  o.connect(g);g.connect(master);o.start(t);o.stop(t+d+.03);}
+function noise(d,vol,fc,delay){const t=AC.currentTime+(delay||0),n=Math.ceil(AC.sampleRate*d),b=AC.createBuffer(1,n,AC.sampleRate),a=b.getChannelData(0);
+  for(let i=0;i<n;i++)a[i]=(Math.random()*2-1)*(1-i/n);
+  const s=AC.createBufferSource();s.buffer=b;const fl=AC.createBiquadFilter();fl.type='bandpass';fl.frequency.value=fc;fl.Q.value=.8;
+  const g=AC.createGain();g.gain.value=vol;s.connect(fl);fl.connect(g);g.connect(master);s.start(t);}
+const SND={
+  tick:()=>noise(.018,.45,2600),                                                   // Stufe 1: leises Klicken
+  soft:()=>tone(330,.07,'sine',.22),                                               // Stufe 2: sanfter Ton
+  warn:()=>tone(1050,.035,'square',.07),                                           // Warn-Piepen (Loch nah)
+  tock:()=>{tone(160,.09,'sine',.6,70);noise(.03,.35,900);},                       // Stufe 3: dumpfer Stoß
+  mid:()=>{tone(523,.07,'triangle',.3);tone(784,.1,'triangle',.3,null,.06);},      // Stufe 3: Treffer
+  beat:()=>{tone(72,.1,'sine',.85,45);tone(66,.12,'sine',.75,40,.15);},           // Herzschlag
+  hard:()=>{tone(115,.12,'square',.22,80);tone(110,.15,'square',.22,70,.16);},     // Stufe 4: Fehler-Brummen
+  win:()=>[523,659,784,1047].forEach((f,i)=>tone(f,.15,'triangle',.26,null,i*.08)),// Erfolg
+  crash:()=>{noise(.8,.9,320);tone(95,.7,'sawtooth',.28,30);}                      // Einsturz
+};
+function sound(k){if(muted||!AC||!SND[k])return;try{SND[k]();}catch(e){}}
+addEventListener('pointerdown',audioInit,{passive:true});
+function initMuteBtn(){const b=document.getElementById('bMute');if(!b)return;
+  const r=()=>b.textContent=muted?'🔇 Ton aus':'🔊 Ton an';r();
+  b.onclick=()=>{muted=!muted;try{localStorage.setItem('gg_mute',muted?'1':'0');}catch(e){}audioInit();r();if(!muted)sound('mid');};}
+
 /* ---------- Haptik-Stufen ---------- */
 const PAT={tick:[6],soft:[18],mid:[40],hard:[100,50,100],win:[30,40,30,40,140],warn:[12,40,12],beat:[30,90,50],crash:[200,60,200,60,400]};
 const SHAKE={tick:0,soft:1,mid:3,hard:9,win:3,warn:1.5,beat:2.5,crash:16};
 let shake=0,lastTick=0,pulse=0,pulseCol='#fff';
 function haptic(k,col){const now=performance.now();if(k==='tick'&&now-lastTick<70)return;if(k==='tick')lastTick=now;
   try{navigator.vibrate&&navigator.vibrate(PAT[k]);}catch(e){}
+  sound(k);
   shake=Math.max(shake,SHAKE[k]);if(col){pulse=1;pulseCol=col;}}
 
 /* ---------- Aufgaben nach Turmhöhe ---------- */
@@ -120,8 +159,8 @@ function menu(){state='menu';bar.style.display='none';ov.style.display='flex';
   <p class="small">Handy neigen. Ohne Sensor: Finger ziehen. Am PC: Pfeiltasten.<br>Ab Höhe 5 bewegen sich die Antworten.</p>
   ${best?`<p class="small">Höchster Turm: ${best}</p>`:''}
   <button id="go">Bauen</button>`;
-  document.getElementById('go').onclick=async()=>{await askSensor();baseB=null;start();};}
-function start(){ov.style.display='none';bar.style.display='block';state='play';tower=[];wobble=0;floats=[];fallBlocks=[];collapse=0;
+  document.getElementById('go').onclick=async()=>{audioInit();await askSensor();baseB=null;start();};}
+function start(){ov.style.display='none';bar.style.display='flex';state='play';tower=[];wobble=0;floats=[];fallBlocks=[];collapse=0;
   const b=board();ball={x:b.x+b.w/2,y:b.y+b.h/2,vx:0,vy:0};newTask();}
 function over(){state='collapse';collapse=0;haptic('crash','#ff5a5a');
   fallBlocks=tower.map((c,i)=>({c,i,x:0,y:0,vx:(Math.random()-.5)*160,vy:-Math.random()*80,rot:0,vr:(Math.random()-.5)*6}));
@@ -230,7 +269,7 @@ function draw(now){
   if(!gyroOK&&state==='play'){ctx.fillStyle='#6a5f56';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText('Kein Neigungssensor – Finger ziehen',b.x+b.w/2,b.y+b.h-8);}
   ctx.restore();
 }
-menu();requestAnimationFrame(loop);
+initMuteBtn();menu();requestAnimationFrame(loop);
 })();
 </script>
 </body>

@@ -24,6 +24,7 @@
 <canvas id="c"></canvas>
 <div id="bar" style="display:none">
   <button id="bReset">↺ Neu (−5 s)</button>
+  <button id="bMute">🔊 Ton an</button>
   <button id="bCal">⊙ Kalibrieren</button>
 </div>
 <div id="ov"><div class="card" id="ovc"></div></div>
@@ -60,6 +61,43 @@ async function askSensor(){
   try{ if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){await DeviceOrientationEvent.requestPermission();} }catch(e){}
 }
 
+
+/* ---------- Ton-Feedback in Stufen (Ersatz für Vibration auf dem iPhone) ---------- */
+let AC=null,master=null,muted=false;
+try{muted=localStorage.getItem('gg_mute')==='1';}catch(e){}
+function audioInit(){
+  try{if(navigator.audioSession)navigator.audioSession.type='playback';}catch(e){}
+  try{
+    if(!AC){const C=window.AudioContext||window.webkitAudioContext;if(!C)return;AC=new C();master=AC.createGain();master.gain.value=.7;master.connect(AC.destination);}
+    if(AC.state!=='running')AC.resume();
+    const b=AC.createBuffer(1,1,22050),s=AC.createBufferSource();s.buffer=b;s.connect(master);s.start(0);
+  }catch(e){}
+}
+function tone(f,d,type,vol,f2,delay){const t=AC.currentTime+(delay||0),o=AC.createOscillator(),g=AC.createGain();
+  o.type=type||'sine';o.frequency.setValueAtTime(f,t);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t+d);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.005);g.gain.exponentialRampToValueAtTime(.0001,t+d);
+  o.connect(g);g.connect(master);o.start(t);o.stop(t+d+.03);}
+function noise(d,vol,fc,delay){const t=AC.currentTime+(delay||0),n=Math.ceil(AC.sampleRate*d),b=AC.createBuffer(1,n,AC.sampleRate),a=b.getChannelData(0);
+  for(let i=0;i<n;i++)a[i]=(Math.random()*2-1)*(1-i/n);
+  const s=AC.createBufferSource();s.buffer=b;const fl=AC.createBiquadFilter();fl.type='bandpass';fl.frequency.value=fc;fl.Q.value=.8;
+  const g=AC.createGain();g.gain.value=vol;s.connect(fl);fl.connect(g);g.connect(master);s.start(t);}
+const SND={
+  tick:()=>noise(.018,.45,2600),                                                   // Stufe 1: leises Klicken
+  soft:()=>tone(330,.07,'sine',.22),                                               // Stufe 2: sanfter Ton
+  warn:()=>tone(1050,.035,'square',.07),                                           // Warn-Piepen (Loch nah)
+  tock:()=>{tone(160,.09,'sine',.6,70);noise(.03,.35,900);},                       // Stufe 3: dumpfer Stoß
+  mid:()=>{tone(523,.07,'triangle',.3);tone(784,.1,'triangle',.3,null,.06);},      // Stufe 3: Treffer
+  beat:()=>{tone(72,.1,'sine',.85,45);tone(66,.12,'sine',.75,40,.15);},           // Herzschlag
+  hard:()=>{tone(115,.12,'square',.22,80);tone(110,.15,'square',.22,70,.16);},     // Stufe 4: Fehler-Brummen
+  win:()=>[523,659,784,1047].forEach((f,i)=>tone(f,.15,'triangle',.26,null,i*.08)),// Erfolg
+  crash:()=>{noise(.8,.9,320);tone(95,.7,'sawtooth',.28,30);}                      // Einsturz
+};
+function sound(k){if(muted||!AC||!SND[k])return;try{SND[k]();}catch(e){}}
+addEventListener('pointerdown',audioInit,{passive:true});
+function initMuteBtn(){const b=document.getElementById('bMute');if(!b)return;
+  const r=()=>b.textContent=muted?'🔇 Ton aus':'🔊 Ton an';r();
+  b.onclick=()=>{muted=!muted;try{localStorage.setItem('gg_mute',muted?'1':'0');}catch(e){}audioInit();r();if(!muted)sound('mid');};}
+
 /* ---------- Haptik in Stufen (Vibration + sichtbares Rütteln) ---------- */
 const PAT={tick:[6],soft:[18],mid:[40],hard:[90,50,90],win:[30,40,30,40,140],warn:[12,40,12],tock:[25]};
 const SHAKE={tick:0,soft:1,mid:3,hard:9,win:4,warn:1.5,tock:2};
@@ -67,6 +105,7 @@ let shake=0,lastTick=0,pulse=0,pulseCol='#fff';
 function haptic(k,col){
   const now=performance.now(); if(k==='tick'&&now-lastTick<70)return; if(k==='tick')lastTick=now;
   try{navigator.vibrate&&navigator.vibrate(PAT[k]);}catch(e){}
+  sound(k);
   shake=Math.max(shake,SHAKE[k]); if(col){pulse=1;pulseCol=col;}
 }
 
@@ -135,7 +174,7 @@ function menu(){
   <label><input type="checkbox" id="cbBlind"> Profi: Zwischenstand nach 2,5 s ausblenden</label>
   ${best?`<p class="small">Bestwert: ${best}</p>`:''}
   <button id="go">Start</button>`;
-  document.getElementById('go').onclick=async()=>{blind=document.getElementById('cbBlind').checked;await askSensor();baseB=null;level=1;score=0;start();};
+  document.getElementById('go').onclick=async()=>{blind=document.getElementById('cbBlind').checked;audioInit();await askSensor();baseB=null;level=1;score=0;start();};
 }
 function start(){ov.style.display='none';bar.style.display='flex';state='play';newLevel();}
 function over(){
@@ -277,7 +316,7 @@ function draw(now){
 function opColor(o){return o==='+'?'#7be0a6':o==='−'?'#ff9f8a':o==='×'?'#8ab8ff':'#d6a8ff';}
 function roundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
-menu();requestAnimationFrame(step);
+initMuteBtn();menu();requestAnimationFrame(step);
 })();
 </script>
 </body>
