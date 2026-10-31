@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Wackelturm – Rechnen mit ruhiger Hand</title>
+<style>
+  html,body{margin:0;height:100%;background:#14110f;color:#f4ece4;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  canvas{display:block}
+  #ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(18,14,12,.93);z-index:5;padding:20px;box-sizing:border-box}
+  .card{max-width:380px;text-align:center}
+  h1{margin:.2em 0;font-size:30px}
+  h1 span{color:#ff9b54}
+  p{line-height:1.45;color:#d8cdc2;font-size:15px}
+  .small{font-size:12px;color:#9a8e83}
+  button{font:inherit;font-size:18px;font-weight:700;border:0;border-radius:14px;padding:14px 26px;background:#ff9b54;color:#221508;margin:6px;cursor:pointer}
+  button.sec{background:#3a302a;color:#f4ece4;font-size:14px;padding:10px 16px}
+  #bar{position:fixed;right:8px;bottom:8px;z-index:3}
+  #bar button{font-size:13px;padding:8px 12px;margin:0;background:#3a302a;color:#f4ece4}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="bar" style="display:none"><button id="bCal">⊙ Kalibrieren</button></div>
+<div id="ov"><div class="card" id="ovc"></div></div>
+<script>
+(()=>{
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H;
+function resize(){const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;cv.style.width=W+'px';cv.style.height=H+'px';ctx.setTransform(d,0,0,d,0,0);}
+addEventListener('resize',resize);resize();
+const rand=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const shuffle=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;};
+
+/* ---------- Eingabe ---------- */
+const tilt={x:0,y:0};let gyroOK=false,baseB=null,baseG=0,gyro={x:0,y:0};
+addEventListener('deviceorientation',e=>{if(e.gamma==null||e.beta==null)return;gyroOK=true;
+  if(baseB===null){baseB=e.beta;baseG=e.gamma;}
+  gyro.x=clamp((e.gamma-baseG)/25,-1,1);gyro.y=clamp((e.beta-baseB)/25,-1,1);});
+let touch=null,touchT={x:0,y:0};
+cv.addEventListener('pointerdown',e=>{touch={x:e.clientX,y:e.clientY};touchT={x:0,y:0};});
+addEventListener('pointermove',e=>{if(!touch)return;touchT.x=clamp((e.clientX-touch.x)/70,-1,1);touchT.y=clamp((e.clientY-touch.y)/70,-1,1);});
+addEventListener('pointerup',()=>{touch=null;touchT={x:0,y:0};});
+const keys={};addEventListener('keydown',e=>keys[e.key]=1);addEventListener('keyup',e=>keys[e.key]=0);
+function readTilt(){
+  if(touch){tilt.x=touchT.x;tilt.y=touchT.y;return;}
+  const kx=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0),ky=(keys.ArrowDown?1:0)-(keys.ArrowUp?1:0);
+  if(kx||ky){tilt.x=kx;tilt.y=ky;return;}
+  if(gyroOK){tilt.x=gyro.x;tilt.y=gyro.y;return;}
+  tilt.x=0;tilt.y=0;
+}
+async function askSensor(){try{if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission)await DeviceOrientationEvent.requestPermission();}catch(e){}}
+
+/* ---------- Haptik-Stufen ---------- */
+const PAT={tick:[6],soft:[18],mid:[40],hard:[100,50,100],win:[30,40,30,40,140],warn:[12,40,12],beat:[30,90,50],crash:[200,60,200,60,400]};
+const SHAKE={tick:0,soft:1,mid:3,hard:9,win:3,warn:1.5,beat:2.5,crash:16};
+let shake=0,lastTick=0,pulse=0,pulseCol='#fff';
+function haptic(k,col){const now=performance.now();if(k==='tick'&&now-lastTick<70)return;if(k==='tick')lastTick=now;
+  try{navigator.vibrate&&navigator.vibrate(PAT[k]);}catch(e){}
+  shake=Math.max(shake,SHAKE[k]);if(col){pulse=1;pulseCol=col;}}
+
+/* ---------- Aufgaben nach Turmhöhe ---------- */
+function makeTask(h){
+  let q,a,a1,b1,c1;
+  if(h<4){ if(Math.random()<.5){a1=rand(3,15);b1=rand(2,12);q=`${a1} + ${b1}`;a=a1+b1;} else {a1=rand(8,20);b1=rand(2,a1-1);q=`${a1} − ${b1}`;a=a1-b1;} }
+  else if(h<8){ const t=rand(0,2);
+    if(t===0){a1=rand(3,9);b1=rand(3,9);q=`${a1} × ${b1}`;a=a1*b1;}
+    else if(t===1){a1=rand(15,60);b1=rand(12,40);q=`${a1} + ${b1}`;a=a1+b1;}
+    else{b1=rand(3,9);a=rand(3,9);q=`${a*b1} ÷ ${b1}`;} }
+  else if(h<13){ const t=rand(0,2);
+    if(t===0){a1=rand(3,9);b1=rand(3,9);c1=rand(2,20);q=`${a1} × ${b1} + ${c1}`;a=a1*b1+c1;}
+    else if(t===1){a1=rand(2,9);b1=rand(2,9);c1=rand(2,6);q=`(${a1} + ${b1}) × ${c1}`;a=(a1+b1)*c1;}
+    else{a1=rand(6,9);b1=rand(6,9);c1=rand(5,30);q=`${a1} × ${b1} − ${c1}`;a=a1*b1-c1;} }
+  else { const t=rand(0,3);
+    if(t===0){a1=rand(11,19);q=`${a1}²`;a=a1*a1;}
+    else if(t===1){a1=rand(12,25);b1=rand(3,8);q=`${a1} × ${b1}`;a=a1*b1;}
+    else if(t===2){a1=rand(2,9)*10;b1=pick([10,20,25,50]);q=`${b1} % von ${a1*2}`;a=a1*2*b1/100;if(a%1){a1=40;b1=25;q='25 % von 80';a=20;}}
+    else{a1=rand(3,9);b1=rand(3,9);c1=rand(3,9);q=`${a1} × ${b1} − ${c1} × ${a1}`;a=a1*b1-c1*a1;} }
+  const n=h>=6?4:3; const set=new Set([a]);
+  const near=[a+1,a-1,a+2,a-2,a+10,a-10,
+    a>9?+String(a).split('').reverse().join(''):a+3, a+rand(3,6), a-rand(3,6)];
+  shuffle(near);
+  for(const v of near){if(set.size>=n)break;if(v!==a&&v>=0)set.add(v);}
+  while(set.size<n)set.add(a+rand(-15,15));
+  return {q,a,opts:shuffle([...set])};
+}
+
+/* ---------- Zustand ---------- */
+let state='menu',tower=[],wobble=0,task,zones=[],holes=[],ball,qTime=0,floats=[],cool=0,lastBeat=0,lastWarn=0,best=0,collapse=0,fallBlocks=[];
+try{best=+localStorage.getItem('turm_best')||0;}catch(e){}
+const R=13,STRIP=62,HUD=92;
+function board(){return {x:STRIP+8,y:HUD,w:W-STRIP-16,h:H-HUD-52};}
+const COLS=['#ff9b54','#ffcf56','#7bd389','#5bc0eb','#c084fc','#f472b6','#f87171'];
+
+function placeFree(r,avoid){const b=board();
+  for(let k=0;k<400;k++){const x=b.x+r+6+Math.random()*(b.w-2*r-12),y=b.y+r+6+Math.random()*(b.h-2*r-12);
+    if(avoid.every(o=>Math.hypot(o.x-x,o.y-y)>(o.r||0)+r+16))return{x,y};}
+  return{x:b.x+b.w/2,y:b.y+b.h/2};}
+function newTask(){
+  const h=tower.length;task=makeTask(h);qTime=0;
+  const ballObj={x:ball.x,y:ball.y,r:70};
+  holes=[];const nh=Math.min(Math.floor(h/2),6);
+  zones=[];
+  const speed=h>=5?Math.min(14+(h-5)*5,60):0;
+  for(const v of task.opts){const p=placeFree(32,[ballObj,...zones]);const ang=Math.random()*6.28;
+    zones.push({x:p.x,y:p.y,r:32,v,vx:Math.cos(ang)*speed,vy:Math.sin(ang)*speed});}
+  for(let i=0;i<nh;i++){const p=placeFree(15,[ballObj,...zones,...holes]);holes.push({x:p.x,y:p.y,r:15});}
+  cool=performance.now()+400;
+}
+function addWobble(x){wobble=clamp(wobble+x,0,100);}
+
+/* ---------- Overlay ---------- */
+const ov=document.getElementById('ov'),ovc=document.getElementById('ovc'),bar=document.getElementById('bar');
+function menu(){state='menu';bar.style.display='none';ov.style.display='flex';
+  ovc.innerHTML=`<h1>Wackel<span>turm</span></h1>
+  <p>Rechne die Aufgabe und roll den Ball auf die richtige Antwort. Jede richtige Antwort setzt einen Block auf deinen Turm.</p>
+  <p>Aber der Turm wackelt: bei falschen Antworten, harten Wandstößen, Löchern und wenn du zu lange brauchst. Bei 100 % Wackeln stürzt er ein.</p>
+  <p class="small">Handy neigen. Ohne Sensor: Finger ziehen. Am PC: Pfeiltasten.<br>Ab Höhe 5 bewegen sich die Antworten.</p>
+  ${best?`<p class="small">Höchster Turm: ${best}</p>`:''}
+  <button id="go">Bauen</button>`;
+  document.getElementById('go').onclick=async()=>{await askSensor();baseB=null;start();};}
+function start(){ov.style.display='none';bar.style.display='block';state='play';tower=[];wobble=0;floats=[];fallBlocks=[];collapse=0;
+  const b=board();ball={x:b.x+b.w/2,y:b.y+b.h/2,vx:0,vy:0};newTask();}
+function over(){state='collapse';collapse=0;haptic('crash','#ff5a5a');
+  fallBlocks=tower.map((c,i)=>({c,i,x:0,y:0,vx:(Math.random()-.5)*160,vy:-Math.random()*80,rot:0,vr:(Math.random()-.5)*6}));
+  setTimeout(()=>{state='over';bar.style.display='none';
+    if(tower.length>best){best=tower.length;try{localStorage.setItem('turm_best',best);}catch(e){}}
+    ov.style.display='flex';
+    ovc.innerHTML=`<h1>Eingestürzt!</h1><p>Dein Turm war <b>${tower.length}</b> Blöcke hoch.</p><p class="small">Höchster Turm: ${best}</p><button id="go">Neu bauen</button><br><button class="sec" id="mn">Menü</button>`;
+    document.getElementById('go').onclick=start;document.getElementById('mn').onclick=menu;},1600);}
+document.getElementById('bCal').onclick=()=>{baseB=null;haptic('soft');};
+
+/* ---------- Loop ---------- */
+let last=performance.now();
+function loop(now){const dt=Math.min(.033,(now-last)/1000);last=now;
+  if(state==='play')update(dt,now);
+  if(state==='collapse'){collapse+=dt;fallBlocks.forEach(f=>{f.vy+=900*dt;f.x+=f.vx*dt;f.y+=f.vy*dt;f.rot+=f.vr*dt;});}
+  shake*=Math.pow(.02,dt);pulse*=Math.pow(.05,dt);
+  draw(now);requestAnimationFrame(loop);}
+function update(dt,now){
+  readTilt();const b=board(),A=900;
+  ball.vx+=tilt.x*A*dt;ball.vy+=tilt.y*A*dt;const f=Math.pow(.35,dt);ball.vx*=f;ball.vy*=f;
+  ball.x+=ball.vx*dt;ball.y+=ball.vy*dt;
+  let imp=0;
+  if(ball.x<b.x+R){ball.x=b.x+R;imp=Math.abs(ball.vx);ball.vx*=-.45;}
+  if(ball.x>b.x+b.w-R){ball.x=b.x+b.w-R;imp=Math.abs(ball.vx);ball.vx*=-.45;}
+  if(ball.y<b.y+R){ball.y=b.y+R;imp=Math.max(imp,Math.abs(ball.vy));ball.vy*=-.45;}
+  if(ball.y>b.y+b.h-R){ball.y=b.y+b.h-R;imp=Math.max(imp,Math.abs(ball.vy));ball.vy*=-.45;}
+  if(imp>280){haptic('mid','#ffcf56');addWobble((imp-280)/25);floats.push({x:ball.x,y:ball.y-20,txt:'Rumms!',c:'#ffcf56',t:0});}
+  else if(imp>90)haptic('tick');
+  // Zonen bewegen
+  for(const z of zones){z.x+=z.vx*dt;z.y+=z.vy*dt;
+    if(z.x<b.x+z.r||z.x>b.x+b.w-z.r){z.vx*=-1;z.x=clamp(z.x,b.x+z.r,b.x+b.w-z.r);}
+    if(z.y<b.y+z.r||z.y>b.y+b.h-z.r){z.vy*=-1;z.y=clamp(z.y,b.y+z.r,b.y+b.h-z.r);}}
+  // Antwort prüfen
+  if(now>cool)for(const z of zones){
+    if(Math.hypot(z.x-ball.x,z.y-ball.y)<z.r-4){
+      if(z.v===task.a){
+        tower.push(COLS[tower.length%COLS.length]);addWobble(-12);
+        const fast=qTime<4;haptic('win','#7bd389');
+        floats.push({x:z.x,y:z.y-30,txt:fast?'Schnell! +Stabil':'Richtig!',c:'#7bd389',t:0});
+        if(fast)addWobble(-8);
+        newTask();
+      }else{
+        addWobble(28);haptic('hard','#ff5a5a');
+        floats.push({x:z.x,y:z.y-30,txt:`${task.q} ≠ ${z.v}`,c:'#ff8a8a',t:0});
+        zones=zones.filter(o=>o!==z);cool=now+300;
+      }
+      break;
+    }}
+  // Löcher
+  for(const h of holes){const d=Math.hypot(h.x-ball.x,h.y-ball.y);
+    if(d<h.r-3){haptic('hard','#ff5a5a');addWobble(20);
+      if(tower.length){tower.pop();floats.push({x:h.x,y:h.y-24,txt:'Block verloren!',c:'#ff8a8a',t:0});}
+      ball.x=b.x+b.w/2;ball.y=b.y+b.h-30;ball.vx=ball.vy=0;break;}
+    else if(d<h.r+R+22){const iv=120+(d-h.r-R)*12;if(now-lastWarn>iv){lastWarn=now;haptic('warn');}
+      ball.vx+=(h.x-ball.x)/d*150*dt;ball.vy+=(h.y-ball.y)/d*150*dt;}}
+  // Wind: Zeitdruck
+  qTime+=dt;if(qTime>8)addWobble((3+tower.length*.3)*dt);
+  else addWobble(-2*dt);
+  // Herzschlag-Haptik bei hoher Wackelgefahr
+  if(wobble>55){const iv=1400-(wobble-55)*22;if(now-lastBeat>iv){lastBeat=now;haptic('beat',wobble>80?'#ff5a5a':null);}}
+  if(wobble>=100)over();
+  floats.forEach(f=>f.t+=dt);floats=floats.filter(f=>f.t<1.3);
+}
+
+/* ---------- Zeichnen ---------- */
+function circle(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+function draw(now){
+  ctx.save();ctx.fillStyle='#14110f';ctx.fillRect(0,0,W,H);
+  if(state==='menu'||state==='over'&&!tower){ctx.restore();return;}
+  if(state==='menu'){ctx.restore();return;}
+  ctx.translate((Math.random()-.5)*shake*2,(Math.random()-.5)*shake*2);
+  const b=board();
+  // HUD
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillStyle='#9a8e83';ctx.font='600 12px system-ui';ctx.fillText(`HÖHE ${tower.length}`,(W+STRIP)/2,14);
+  ctx.fillStyle='#fff';ctx.font=`800 ${task&&task.q.length>14?26:32}px system-ui`;ctx.fillText(task?task.q+' = ?':'',(W+STRIP)/2,46);
+  // Wackel-Meter
+  const mx=STRIP+8,mw=W-STRIP-16;
+  ctx.fillStyle='#2a2320';rr(mx,72,mw,8,4);ctx.fill();
+  ctx.fillStyle=wobble>80?'#ff5a5a':wobble>55?'#ffb054':'#7bd389';rr(mx,72,Math.max(8,mw*wobble/100),8,4);ctx.fill();
+  if(qTime>8&&state==='play'){ctx.fillStyle='#ffb054';ctx.font='11px system-ui';ctx.textAlign='right';ctx.fillText('Wind!',mx+mw,62);}
+  // Turmstreifen
+  ctx.fillStyle='#1d1815';rr(6,HUD,STRIP-6,H-HUD-52,12);ctx.fill();
+  const bh=Math.min(18,(H-HUD-70)/Math.max(tower.length,1)),baseY=H-60,cx=6+(STRIP-6)/2,bw=STRIP-20;
+  ctx.fillStyle='#4a3f38';ctx.fillRect(10,baseY,STRIP-14,4);
+  if(state==='collapse'){
+    fallBlocks.forEach(f=>{const y0=baseY-(f.i+1)*bh;ctx.save();ctx.translate(cx+f.x,y0+bh/2+f.y);ctx.rotate(f.rot);ctx.fillStyle=f.c;ctx.fillRect(-bw/2,-bh/2+1,bw,bh-2);ctx.restore();});
+  }else{
+    const sway=Math.sin(now/(260-wobble*1.2))*wobble/100;
+    tower.forEach((c,i)=>{const k=(i+1)/Math.max(tower.length,1);const off=sway*k*k*14;
+      ctx.fillStyle=c;rr(cx-bw/2+off,baseY-(i+1)*bh+1,bw,bh-2,3);ctx.fill();});
+  }
+  // Brett
+  ctx.fillStyle='#211b17';rr(b.x,b.y,b.w,b.h,16);ctx.fill();
+  if(pulse>.02){ctx.strokeStyle=pulseCol;ctx.globalAlpha=pulse;ctx.lineWidth=6;rr(b.x,b.y,b.w,b.h,16);ctx.stroke();ctx.globalAlpha=1;}
+  // Löcher
+  for(const h of holes){const g=ctx.createRadialGradient(h.x,h.y,2,h.x,h.y,h.r+6);g.addColorStop(0,'#000');g.addColorStop(.7,'#060403');g.addColorStop(1,'rgba(6,4,3,0)');ctx.fillStyle=g;circle(h.x,h.y,h.r+6);ctx.fill();}
+  // Antwortfelder
+  for(const z of zones){ctx.fillStyle='#3a302a';circle(z.x,z.y,z.r);ctx.fill();ctx.strokeStyle='#ff9b54';ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font=`800 ${String(z.v).length>3?16:20}px system-ui`;ctx.textAlign='center';ctx.fillText(z.v,z.x,z.y+1);}
+  // Ball
+  if(ball&&state!=='collapse'){const g=ctx.createRadialGradient(ball.x-4,ball.y-5,2,ball.x,ball.y,R);g.addColorStop(0,'#fff');g.addColorStop(1,'#ffb07a');ctx.fillStyle=g;circle(ball.x,ball.y,R);ctx.fill();}
+  for(const f of floats){ctx.globalAlpha=1-f.t/1.3;ctx.fillStyle=f.c;ctx.font='700 15px system-ui';ctx.textAlign='center';ctx.fillText(f.txt,clamp(f.x,STRIP+80,W-80),f.y-f.t*30);}
+  ctx.globalAlpha=1;
+  if(!gyroOK&&state==='play'){ctx.fillStyle='#6a5f56';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText('Kein Neigungssensor – Finger ziehen',b.x+b.w/2,b.y+b.h-8);}
+  ctx.restore();
+}
+menu();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

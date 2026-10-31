@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Zielzahl – Roll die Rechnung</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f1220;color:#eef;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  canvas{display:block}
+  #ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,12,24,.92);z-index:5;padding:20px;box-sizing:border-box}
+  .card{max-width:380px;text-align:center}
+  h1{margin:.2em 0;font-size:30px;letter-spacing:.5px}
+  h1 span{color:#ffcc4d}
+  p{line-height:1.45;color:#c8cbe0;font-size:15px}
+  button{font:inherit;font-size:18px;font-weight:700;border:0;border-radius:14px;padding:14px 26px;background:#ffcc4d;color:#1a1a2a;margin:6px;cursor:pointer}
+  button.sec{background:#2a2f4d;color:#eef;font-size:14px;padding:10px 16px}
+  label{display:flex;gap:8px;align-items:center;justify-content:center;font-size:14px;color:#c8cbe0;margin:10px 0}
+  .small{font-size:12px;color:#8a8fb0}
+  #bar{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;gap:8px;padding:8px;z-index:3}
+  #bar button{font-size:13px;padding:8px 12px;margin:0;background:#2a2f4d;color:#eef}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="bar" style="display:none">
+  <button id="bReset">↺ Neu (−5 s)</button>
+  <button id="bCal">⊙ Kalibrieren</button>
+</div>
+<div id="ov"><div class="card" id="ovc"></div></div>
+<script>
+(()=>{
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H;
+function resize(){const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;cv.style.width=W+'px';cv.style.height=H+'px';ctx.setTransform(d,0,0,d,0,0);}
+addEventListener('resize',()=>{resize(); if(state==='play') layoutClamp();});resize();
+
+const rand=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+
+/* ---------- Eingabe: Gyro, Finger, Tastatur ---------- */
+const tilt={x:0,y:0};let gyroOK=false,baseB=null,baseG=0,gyro={x:0,y:0};
+function onOri(e){ if(e.gamma==null||e.beta==null)return; gyroOK=true;
+  if(baseB===null){baseB=e.beta;baseG=e.gamma;}
+  gyro.x=clamp((e.gamma-baseG)/25,-1,1); gyro.y=clamp((e.beta-baseB)/25,-1,1);}
+addEventListener('deviceorientation',onOri);
+let touch=null,touchT={x:0,y:0};
+cv.addEventListener('pointerdown',e=>{touch={x:e.clientX,y:e.clientY};touchT={x:0,y:0};});
+addEventListener('pointermove',e=>{if(!touch)return;touchT.x=clamp((e.clientX-touch.x)/70,-1,1);touchT.y=clamp((e.clientY-touch.y)/70,-1,1);});
+addEventListener('pointerup',()=>{touch=null;touchT={x:0,y:0};});
+const keys={};addEventListener('keydown',e=>keys[e.key]=1);addEventListener('keyup',e=>keys[e.key]=0);
+function readTilt(){
+  if(touch){tilt.x=touchT.x;tilt.y=touchT.y;return;}
+  const kx=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0),ky=(keys.ArrowDown?1:0)-(keys.ArrowUp?1:0);
+  if(kx||ky){tilt.x=kx;tilt.y=ky;return;}
+  if(gyroOK){tilt.x=gyro.x;tilt.y=gyro.y;return;}
+  tilt.x=0;tilt.y=0;
+}
+async function askSensor(){
+  try{ if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){await DeviceOrientationEvent.requestPermission();} }catch(e){}
+}
+
+/* ---------- Haptik in Stufen (Vibration + sichtbares Rütteln) ---------- */
+const PAT={tick:[6],soft:[18],mid:[40],hard:[90,50,90],win:[30,40,30,40,140],warn:[12,40,12],tock:[25]};
+const SHAKE={tick:0,soft:1,mid:3,hard:9,win:4,warn:1.5,tock:2};
+let shake=0,lastTick=0,pulse=0,pulseCol='#fff';
+function haptic(k,col){
+  const now=performance.now(); if(k==='tick'&&now-lastTick<70)return; if(k==='tick')lastTick=now;
+  try{navigator.vibrate&&navigator.vibrate(PAT[k]);}catch(e){}
+  shake=Math.max(shake,SHAKE[k]); if(col){pulse=1;pulseCol=col;}
+}
+
+/* ---------- Spielzustand ---------- */
+let state='menu',level=1,score=0,timeLeft=0,value=0,startVal=0,target=0,blind=false,best=0;
+let tiles=[],holes=[],goal,ball,startPos,floats=[],hideAt=0,lastWarn=0,lastSec=99,goalCool=0;
+try{best=+localStorage.getItem('zielzahl_best')||0;}catch(e){}
+const HUD=118,R=13;
+function board(){return {x:10,y:HUD,w:W-20,h:H-HUD-58};}
+
+function applyOp(v,t){switch(t.op){case'+':return v+t.n;case'−':return v-t.n;case'×':return v*t.n;case'÷':return v%t.n===0?v/t.n:null;}}
+function genOps(n){
+  const s=rand(2,6+n*2);let v=s;const ops=[];
+  const steps=Math.min(2+Math.floor((n+1)/2),6);
+  for(let i=0;i<steps;i++){
+    let cands=['+','−','×','÷'];let t=null,tries=0;
+    while(!t&&tries++<30){
+      const op=pick(cands);
+      if(op==='+'){t={op,n:rand(2,8+n*2)};}
+      else if(op==='−'&&v>4){t={op,n:rand(2,Math.min(v-1,8+n*2))};}
+      else if(op==='×'&&v*2<=150){const m=rand(2,n>3?6:4);if(v*m<=150)t={op,n:m};}
+      else if(op==='÷'){const ds=[2,3,4,5,6,7,8,9].filter(d=>v%d===0&&v/d>1);if(ds.length)t={op,n:pick(ds)};}
+    }
+    if(!t)t={op:'+',n:rand(2,9)};
+    v=applyOp(v,t);ops.push(t);
+  }
+  return {s,ops,target:v};
+}
+function placeFree(list,r,avoid){
+  const b=board();
+  for(let k=0;k<400;k++){
+    const x=b.x+r+8+Math.random()*(b.w-2*r-16),y=b.y+r+8+Math.random()*(b.h-2*r-16);
+    if(avoid.every(o=>Math.hypot(o.x-x,o.y-y)>o.r+r+14))return {x,y};
+  }
+  return null;
+}
+function newLevel(){
+  let g;do{g=genOps(level);}while(g.target===g.s||Math.abs(g.target)>999);
+  startVal=g.s;target=g.target;value=startVal;
+  const b=board();
+  startPos={x:b.x+b.w/2,y:b.y+b.h-30,r:30};
+  goal={x:b.x+b.w/2,y:b.y+34,r:24};
+  const occ=[startPos,goal];
+  tiles=[];
+  const distract=Math.min(2+level,8);
+  const all=g.ops.map(o=>({...o,real:1}));
+  for(let i=0;i<distract;i++){const op=pick(['+','−','×','÷']);all.push({op,n:op==='×'||op==='÷'?rand(2,5):rand(2,8+level*2)});}
+  for(const t of all){const p=placeFree([...occ,...tiles],26,[...occ,...tiles]);if(!p)continue;const tt={...t,x:p.x,y:p.y,r:26,used:0};tiles.push(tt);}
+  holes=[];
+  const nh=Math.min(level-1,7);
+  for(let i=0;i<nh;i++){const p=placeFree(null,16,[...occ,...tiles,...holes]);if(p)holes.push({x:p.x,y:p.y,r:16});}
+  ball={x:startPos.x,y:startPos.y,vx:0,vy:0};
+  timeLeft=Math.max(45,95-level*3)+g.ops.length*6;
+  hideAt=performance.now()+2500;lastSec=99;floats=[];
+}
+function resetTiles(){tiles.forEach(t=>t.used=0);value=startVal;ball={x:startPos.x,y:startPos.y,vx:0,vy:0};timeLeft-=5;hideAt=performance.now()+2500;haptic('mid','#7aa2ff');}
+function layoutClamp(){}
+
+/* ---------- Overlay ---------- */
+const ov=document.getElementById('ov'),ovc=document.getElementById('ovc'),bar=document.getElementById('bar');
+function menu(){
+  state='menu';bar.style.display='none';ov.style.display='flex';
+  ovc.innerHTML=`<h1>Ziel<span>zahl</span></h1>
+  <p>Du startest mit einer Zahl. Roll über Rechen-Kacheln, um sie zu verändern (jede Kachel nur einmal). Triff die <b>Zielzahl</b> genau und roll dann ins grüne Ziel.</p>
+  <p class="small">Handy neigen. Ohne Sensor: Finger auf den Bildschirm und ziehen. Am PC: Pfeiltasten.<br>Schwarze Löcher werfen dich an den Start zurück.</p>
+  <label><input type="checkbox" id="cbBlind"> Profi: Zwischenstand nach 2,5 s ausblenden</label>
+  ${best?`<p class="small">Bestwert: ${best}</p>`:''}
+  <button id="go">Start</button>`;
+  document.getElementById('go').onclick=async()=>{blind=document.getElementById('cbBlind').checked;await askSensor();baseB=null;level=1;score=0;start();};
+}
+function start(){ov.style.display='none';bar.style.display='flex';state='play';newLevel();}
+function over(){
+  state='over';haptic('hard','#ff5a5a');bar.style.display='none';
+  if(score>best){best=score;try{localStorage.setItem('zielzahl_best',best);}catch(e){}}
+  ov.style.display='flex';
+  ovc.innerHTML=`<h1>Zeit um</h1><p>Level <b>${level}</b> erreicht · <b>${score}</b> Punkte</p><p class="small">Bestwert: ${best}</p><button id="go">Nochmal</button><br><button class="sec" id="mn">Menü</button>`;
+  document.getElementById('go').onclick=()=>{level=1;score=0;start();};
+  document.getElementById('mn').onclick=menu;
+}
+document.getElementById('bReset').onclick=()=>{if(state==='play')resetTiles();};
+document.getElementById('bCal').onclick=()=>{baseB=null;haptic('soft');};
+
+/* ---------- Loop ---------- */
+let last=performance.now();
+function step(now){
+  const dt=Math.min(.033,(now-last)/1000);last=now;
+  if(state==='play')update(dt,now);
+  draw(now);
+  requestAnimationFrame(step);
+}
+function update(dt,now){
+  readTilt();
+  const b=board(),A=900;
+  ball.vx+=tilt.x*A*dt;ball.vy+=tilt.y*A*dt;
+  const f=Math.pow(.35,dt);ball.vx*=f;ball.vy*=f;
+  ball.x+=ball.vx*dt;ball.y+=ball.vy*dt;
+  // Wände
+  let imp=0;
+  if(ball.x<b.x+R){ball.x=b.x+R;imp=Math.abs(ball.vx);ball.vx*=-.45;}
+  if(ball.x>b.x+b.w-R){ball.x=b.x+b.w-R;imp=Math.abs(ball.vx);ball.vx*=-.45;}
+  if(ball.y<b.y+R){ball.y=b.y+R;imp=Math.max(imp,Math.abs(ball.vy));ball.vy*=-.45;}
+  if(ball.y>b.y+b.h-R){ball.y=b.y+b.h-R;imp=Math.max(imp,Math.abs(ball.vy));ball.vy*=-.45;}
+  if(imp>260)haptic('tock');else if(imp>90)haptic('tick');
+  // Kacheln
+  for(const t of tiles){
+    if(t.used)continue;
+    const d=Math.hypot(t.x-ball.x,t.y-ball.y);
+    if(d<t.r+R-4){
+      const nv=applyOp(value,t);
+      if(nv===null){ // Division geht nicht auf
+        const nx=(ball.x-t.x)/d||0,ny=(ball.y-t.y)/d||1;
+        ball.x=t.x+nx*(t.r+R);ball.y=t.y+ny*(t.r+R);ball.vx=nx*260;ball.vy=ny*260;
+        haptic('hard','#ff5a5a');floats.push({x:t.x,y:t.y-30,txt:`${value} ÷ ${t.n} geht nicht`,c:'#ff8a8a',t:0});
+      }else{
+        floats.push({x:t.x,y:t.y-30,txt:blind?`${t.op}${t.n}`:`${value} ${t.op} ${t.n} = ${nv}`,c:'#ffe28a',t:0});
+        value=nv;t.used=1;haptic('mid','#ffcc4d');hideAt=now+(blind?0:2500);
+      }
+    }
+  }
+  // Löcher: Warnung in der Nähe, Sturz bei Treffer
+  for(const h of holes){
+    const d=Math.hypot(h.x-ball.x,h.y-ball.y);
+    if(d<h.r-3){
+      haptic('hard','#ff5a5a');floats.push({x:h.x,y:h.y-26,txt:'Zurück zum Start!',c:'#ff8a8a',t:0});
+      ball={x:startPos.x,y:startPos.y,vx:0,vy:0};timeLeft-=3;break;
+    }else if(d<h.r+R+22){
+      const gap=d-h.r-R; const iv=120+gap*12;
+      if(now-lastWarn>iv){lastWarn=now;haptic('warn');}
+      // leichter Sog
+      ball.vx+=(h.x-ball.x)/d*140*dt;ball.vy+=(h.y-ball.y)/d*140*dt;
+    }
+  }
+  // Ziel
+  const dg=Math.hypot(goal.x-ball.x,goal.y-ball.y);
+  if(dg<goal.r&&now>goalCool){
+    if(value===target){
+      const bonus=Math.round(timeLeft)*2+level*10;score+=bonus;
+      haptic('win','#5ee38b');level++;
+      floats=[{x:W/2,y:H/2,txt:`+${bonus}`,c:'#5ee38b',t:0}];
+      newLevel();
+    }else{
+      goalCool=now+600;
+      const nx=(ball.x-goal.x)/dg||0,ny=(ball.y-goal.y)/dg||1;
+      ball.vx=nx*380;ball.vy=ny*380+200;
+      haptic('hard','#ff5a5a');
+      floats.push({x:goal.x,y:goal.y+40,txt:blind?'Noch nicht die Zielzahl':`${value} ≠ ${target}`,c:'#ff8a8a',t:0});
+    }
+  }
+  // Zeit
+  timeLeft-=dt;
+  const s=Math.ceil(timeLeft);
+  if(s<=10&&s!==lastSec&&s>0){lastSec=s;haptic(s<=3?'mid':'soft',s<=3?'#ff5a5a':null);}
+  if(timeLeft<=0)over();
+  floats.forEach(f=>f.t+=dt);floats=floats.filter(f=>f.t<1.4);
+  shake*=Math.pow(.02,dt);pulse*=Math.pow(.05,dt);
+}
+
+function circle(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);}
+function draw(now){
+  ctx.save();
+  ctx.fillStyle='#0f1220';ctx.fillRect(0,0,W,H);
+  if(state==='menu'){ctx.restore();return;}
+  const sx=(Math.random()-.5)*shake*2,sy=(Math.random()-.5)*shake*2;ctx.translate(sx,sy);
+  const b=board();
+  // HUD
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillStyle='#8a8fb0';ctx.font='600 12px system-ui';
+  ctx.fillText(`LEVEL ${level}   ·   ${score} P`,W/2,16);
+  ctx.textAlign='left';ctx.fillStyle='#8a8fb0';ctx.fillText('JETZT',18,42);
+  ctx.textAlign='right';ctx.fillText('ZIEL',W-18,42);
+  const hidden=blind&&now>hideAt;
+  ctx.font='800 40px system-ui';
+  ctx.textAlign='left';ctx.fillStyle=hidden?'#4a4f70':'#fff';ctx.fillText(hidden?'?':String(value),16,76);
+  ctx.textAlign='right';ctx.fillStyle='#ffcc4d';ctx.fillText(String(target),W-16,76);
+  // Zeitbalken
+  const tmax=Math.max(45,95-level*3)+12;const tw=(W-32)*clamp(timeLeft/tmax,0,1);
+  ctx.fillStyle='#22263f';ctx.fillRect(16,100,W-32,6);
+  ctx.fillStyle=timeLeft<10?'#ff5a5a':'#7aa2ff';ctx.fillRect(16,100,tw,6);
+  // Brett
+  ctx.fillStyle='#171b30';roundRect(b.x,b.y,b.w,b.h,16);ctx.fill();
+  if(pulse>.02){ctx.strokeStyle=pulseCol;ctx.globalAlpha=pulse;ctx.lineWidth=6;roundRect(b.x,b.y,b.w,b.h,16);ctx.stroke();ctx.globalAlpha=1;}
+  // Start & Ziel
+  ctx.strokeStyle='#2f3556';ctx.lineWidth=2;ctx.setLineDash([5,5]);circle(startPos.x,startPos.y,22);ctx.stroke();ctx.setLineDash([]);
+  const ok=value===target;
+  ctx.fillStyle=ok?'#1f7a45':'#163a2a';circle(goal.x,goal.y,goal.r);ctx.fill();
+  ctx.strokeStyle=ok?'#5ee38b':'#2e6b4b';ctx.lineWidth=3;
+  if(ok){ctx.globalAlpha=.5+.5*Math.sin(now/150);}ctx.stroke();ctx.globalAlpha=1;
+  ctx.fillStyle='#bff5d3';ctx.font='700 11px system-ui';ctx.textAlign='center';ctx.fillText('ZIEL',goal.x,goal.y);
+  // Löcher
+  for(const h of holes){const g=ctx.createRadialGradient(h.x,h.y,2,h.x,h.y,h.r+6);g.addColorStop(0,'#000');g.addColorStop(.7,'#05060c');g.addColorStop(1,'rgba(5,6,12,0)');ctx.fillStyle=g;circle(h.x,h.y,h.r+6);ctx.fill();}
+  // Kacheln
+  for(const t of tiles){
+    ctx.globalAlpha=t.used?.18:1;
+    ctx.fillStyle=t.used?'#2a2f4d':opColor(t.op);circle(t.x,t.y,t.r);ctx.fill();
+    ctx.fillStyle='#10121f';ctx.font='800 17px system-ui';ctx.textAlign='center';ctx.fillText(t.op+t.n,t.x,t.y+1);
+    ctx.globalAlpha=1;
+  }
+  // Ball
+  const g2=ctx.createRadialGradient(ball.x-4,ball.y-5,2,ball.x,ball.y,R);g2.addColorStop(0,'#fff');g2.addColorStop(1,'#9fb4ff');
+  ctx.fillStyle=g2;circle(ball.x,ball.y,R);ctx.fill();
+  // Floats
+  for(const f of floats){ctx.globalAlpha=1-f.t/1.4;ctx.fillStyle=f.c;ctx.font='700 15px system-ui';ctx.textAlign='center';ctx.fillText(f.txt,clamp(f.x,90,W-90),f.y-f.t*30);}
+  ctx.globalAlpha=1;
+  // Sensorhinweis
+  if(!gyroOK){ctx.fillStyle='#5a5f80';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText('Kein Neigungssensor – Finger ziehen zum Steuern',W/2,b.y+b.h-8);}
+  ctx.restore();
+}
+function opColor(o){return o==='+'?'#7be0a6':o==='−'?'#ff9f8a':o==='×'?'#8ab8ff':'#d6a8ff';}
+function roundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+menu();requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
