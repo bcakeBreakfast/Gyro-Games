@@ -110,7 +110,7 @@ function haptic(k,col){
 }
 
 /* ---------- Spielzustand ---------- */
-let state='menu',level=1,score=0,timeLeft=0,value=0,startVal=0,target=0,blind=false,best=0;
+let levelTime=60,state='menu',level=1,score=0,timeLeft=0,value=0,startVal=0,target=0,blind=false,best=0;
 let tiles=[],holes=[],goal,ball,startPos,floats=[],hideAt=0,lastWarn=0,lastSec=99,goalCool=0;
 try{best=+localStorage.getItem('zielzahl_best')||0;}catch(e){}
 const HUD=118,R=13;
@@ -158,9 +158,30 @@ function newLevel(){
   const nh=Math.min(level-1,7);
   for(let i=0;i<nh;i++){const p=placeFree(null,16,[...occ,...tiles,...holes]);if(p)holes.push({x:p.x,y:p.y,r:16});}
   ball={x:startPos.x,y:startPos.y,vx:0,vy:0};
-  timeLeft=Math.max(45,95-level*3)+g.ops.length*6;
+  timeLeft=Math.max(45,95-level*3)+g.ops.length*6;levelTime=timeLeft;
   hideAt=performance.now()+2500;lastSec=99;floats=[];
 }
+// Kann man mit den übrigen Kacheln (beliebige Reihenfolge) noch die Zielzahl treffen?
+function reachable(){
+  if(value===target)return true;
+  const free=tiles.filter(t=>!t.used);const seen=new Set();let nodes=0;
+  function dfs(v,mask){
+    if(v===target)return true;
+    if(++nodes>200000)return true; // zu viele Fälle: lieber nicht fälschlich abbrechen
+    const key=mask+'|'+v;if(seen.has(key))return false;seen.add(key);
+    for(let i=0;i<free.length;i++){if(mask&(1<<i))continue;const nv=applyOp(v,free[i]);if(nv===null)continue;if(dfs(nv,mask|(1<<i)))return true;}
+    return false;
+  }
+  return dfs(value,0);
+}
+function failLevel(){
+  state='fail';haptic('hard','#ff5a5a');bar.style.display='none';ov.style.display='flex';
+  ovc.innerHTML=`<h1>Sackgasse</h1><p>Mit den übrigen Kacheln kommst du von <b>${blind?'?':value}</b> nicht mehr auf <b>${target}</b>.</p><p>Level ${level} nicht geschafft. Versuch es nochmal.</p><button id="go">Level wiederholen</button><br><button class="sec" id="mn">Menü</button>`;
+  document.getElementById('go').onclick=()=>{audioInit();retryLevel();};
+  document.getElementById('mn').onclick=menu;
+}
+function retryLevel(){tiles.forEach(t=>t.used=0);value=startVal;ball={x:startPos.x,y:startPos.y,vx:0,vy:0};timeLeft=levelTime;lastSec=99;floats=[];hideAt=performance.now()+2500;
+  ov.style.display='none';bar.style.display='flex';state='play';}
 function resetTiles(){tiles.forEach(t=>t.used=0);value=startVal;ball={x:startPos.x,y:startPos.y,vx:0,vy:0};timeLeft-=5;hideAt=performance.now()+2500;haptic('mid','#7aa2ff');}
 function layoutClamp(){}
 
@@ -170,6 +191,7 @@ function menu(){
   state='menu';bar.style.display='none';ov.style.display='flex';
   ovc.innerHTML=`<h1>Ziel<span>zahl</span></h1>
   <p>Du startest mit einer Zahl. Roll über Rechen-Kacheln, um sie zu verändern (jede Kachel nur einmal). Triff die <b>Zielzahl</b> genau und roll dann ins grüne Ziel.</p>
+  <p>Führt keine Kombination der übrigen Kacheln mehr zum Ziel, ist das Level verloren und du musst es wiederholen.</p>
   <p class="small">Handy neigen. Ohne Sensor: Finger auf den Bildschirm und ziehen. Am PC: Pfeiltasten.<br>Schwarze Löcher werfen dich an den Start zurück.</p>
   <label><input type="checkbox" id="cbBlind"> Profi: Zwischenstand nach 2,5 s ausblenden</label>
   ${best?`<p class="small">Bestwert: ${best}</p>`:''}
@@ -222,6 +244,7 @@ function update(dt,now){
       }else{
         floats.push({x:t.x,y:t.y-30,txt:blind?`${t.op}${t.n}`:`${value} ${t.op} ${t.n} = ${nv}`,c:'#ffe28a',t:0});
         value=nv;t.used=1;haptic('mid','#ffcc4d');hideAt=now+(blind?0:2500);
+        if(!reachable()){failLevel();return;}
       }
     }
   }
@@ -281,7 +304,7 @@ function draw(now){
   ctx.textAlign='left';ctx.fillStyle=hidden?'#4a4f70':'#fff';ctx.fillText(hidden?'?':String(value),16,76);
   ctx.textAlign='right';ctx.fillStyle='#ffcc4d';ctx.fillText(String(target),W-16,76);
   // Zeitbalken
-  const tmax=Math.max(45,95-level*3)+12;const tw=(W-32)*clamp(timeLeft/tmax,0,1);
+  const tmax=levelTime;const tw=(W-32)*clamp(timeLeft/tmax,0,1);
   ctx.fillStyle='#22263f';ctx.fillRect(16,100,W-32,6);
   ctx.fillStyle=timeLeft<10?'#ff5a5a':'#7aa2ff';ctx.fillRect(16,100,tw,6);
   // Brett
